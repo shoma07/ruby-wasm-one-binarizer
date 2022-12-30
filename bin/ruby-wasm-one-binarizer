@@ -1,0 +1,102 @@
+#!/bin/sh
+
+usage() {
+  cat <<EOF
+usage: $(basename "$0") [OPTION]...
+  -d VALUE    [REQUIRED] src directory
+  -e VALUE    [REQUIRED] entrypoint ruby file
+  -o VALUE    [REQUIRED] output path
+  -h          display help
+EOF
+
+  exit 1
+}
+
+realpath() {
+  case "$1" in /*) ;; *) printf '%s/' "$2";; esac; echo "$1"
+}
+
+download_ruby_wasm() {
+  if [ ! -e "${1}/ruby.wasm" ]; then
+    curl -sSfL https://github.com/ruby/ruby.wasm/releases/latest/download/ruby-head-wasm32-unknown-wasi-full.tar.gz | tar xfz - -C "${1}"
+    mv "${1}/head-wasm32-unknown-wasi-full/usr/local/bin/ruby" "${1}/ruby.wasm"
+    echo "completed download ruby.wasm"
+  else
+    echo "already downloaded ruby.wasm"
+  fi
+}
+
+download_wasi_vfs() {
+  if [ ! -e "${1}/wasi-vfs" ]; then
+    zipfile="${1}/wasi-vfs-cli.zip"
+    curl -sSfL -o "${zipfile}" \
+      https://github.com/kateinoigakukun/wasi-vfs/releases/download/v0.2.0/wasi-vfs-cli-$(arch | sed -e "s/arm64/aarch64/g")-apple-darwin.zip
+    unzip "${zipfile}" -d "${1}"
+    rm "${zipfile}"
+    echo "completed download wasi-vfs"
+  else
+    echo "already downloaded wasi-vfs"
+  fi
+}
+
+download_wasi_preset_args() {
+  if [ ! -e "${1}/wasi-preset-args" ]; then
+    zipfile="${1}/wasi-preset-args.zip"
+    curl -sSfL -o "${zipfile}" \
+      https://github.com/kateinoigakukun/wasi-preset-args/releases/download/v0.1.1/wasi-preset-args-$(arch | sed -e "s/arm64/aarch64/g")-apple-darwin.zip
+    unzip "${zipfile}" -d "${1}"
+    rm "${zipfile}"
+    echo "completed download wasi-preset-args"
+  else
+    echo "already downloaded wasi-preset-args"
+  fi
+}
+
+install_wasmer() {
+  if [ ! -e "${HOME}/.wasmer/bin/wasmer" ]; then
+    curl https://get.wasmer.io -sSfL | sh
+    echo "completed install wasmer"
+  else
+    echo "already installed wasmer"
+    # wasmer self-update
+  fi
+  echo "show wasmer version!"
+  wasmer --version
+}
+
+main() {
+
+  args=$(getopt d:e:o:h $*) || exit 1
+  set -- $args
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -d) src_dir=$2; shift 2 ;;
+      -e) entrypoint=$2; shift 2 ;;
+      -o) out_path=$2; shift 2 ;;
+      -h) usage; shift ;;
+      --) shift; break ;;
+    esac
+  done
+
+  current_dir="$(pwd)"
+  real_vendor_dir="$(realpath "$(echo "$(dirname $0)/../vendor")" "${current_dir}")"
+
+  download_ruby_wasm "${real_vendor_dir}"
+  download_wasi_vfs "${real_vendor_dir}"
+  download_wasi_preset_args "${real_vendor_dir}"
+  install_wasmer
+
+  real_src_dir="$(realpath "${src_dir}" "${current_dir}")"
+  real_out_path="$(realpath "${out_path}" "${current_dir}")"
+
+  tmp_wasm_dir="$(echo "$(dirname $0)/../tmp")/$(date "+%Y%m%d%H%M%S")_$(cat /dev/urandom | base64 | fold -w 16 | head -n 1 | sed -e "s%/%%g")"
+  mkdir -p ${tmp_wasm_dir}
+  cd ${tmp_wasm_dir}
+  ${real_vendor_dir}/wasi-vfs pack ${real_vendor_dir}/ruby.wasm --mapdir /src::${real_src_dir} --mapdir /usr::${real_vendor_dir}/head-wasm32-unknown-wasi-full/usr -o app.wasm
+  ${real_vendor_dir}/wasi-preset-args app.wasm -o app_withargs.wasm -- /src/${entrypoint}
+  wasmer create-exe -o ${real_out_path} app_withargs.wasm
+  cd ${current_dir}
+  rm -r ${tmp_wasm_dir}
+}
+
+main ${@}

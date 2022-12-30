@@ -1,0 +1,6 @@
+example/bin/*
+!example/bin/.keep
+example/wasm/*
+!example/wasm/.keep
+vendor/*
+!vendor/.keep
